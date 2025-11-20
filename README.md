@@ -48,16 +48,6 @@ The application remains perfectly responsive even during heavy tasks.
       * **Thumbnail Embedding:** Add custom covers to video files (Single or Batch).
       * **GIF Generator:** Create GIFs from specific video timestamps.
       * **Audio Extraction:** Rip high-quality audio tracks without re-encoding.
-  * **📄 PDF Toolbox:**
-      * **Merge & Split:** Combine documents or extract specific pages.
-      * **Image Extraction:** Rip all images from a PDF file.
-      * **Page Deletion:** Remove unwanted pages easily.
-  * **🎙️ Audio Manager:**
-      * Batch embed thumbnails/album art into MP3, FLAC, and M4A files.
-  * **🖼️ Image Converter:**
-      * Convert between JPG, PNG, WEBP, ICO, and BMP formats.
-  * **📝 Batch Renamer:**
-      * Clean up filenames in bulk by removing or replacing specific text patterns.
 
 -----
 
@@ -112,21 +102,6 @@ Many tools (like "Change Thumbnail" or "Extract Audio") offer a **Mode Selection
 
   * **Single File:** Select one specific file to process.
   * **Batch (Folder):** Select a directory. The app will process **every supported file** inside that folder automatically.
-
-### 4\. Managing PDFs
-
-1.  Go to the **PDF Tools** tab.
-2.  Select a tool (e.g., **Merge PDFs**).
-3.  Select multiple PDF files using the "Browse" button.
-4.  Choose a destination filename and click **Process**.
-
-### 5\. Renaming Files
-
-1.  Go to the **Rename Files** tab.
-2.  Select the target **Folder**.
-3.  Enter the text you want to **Find/Remove**.
-4.  (Optional) Enter text to **Replace With**.
-5.  Click **Rename Files**. The log will show a "Before -\> After" list of changes.
 
 -----
 
