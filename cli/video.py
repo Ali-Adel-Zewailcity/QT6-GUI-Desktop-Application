@@ -5,6 +5,7 @@ from cli.user_input_handler import calculate_sec
 import time
 from urllib.parse import urlparse
 import requests
+from typing import Callable
 
 class Video(File):
     '''
@@ -396,7 +397,7 @@ class Audio(File):
 
 
 
-def embed_thumbnail_in_folder(folder: Directory, image_file: File | ImageOperations, media: str) -> dict:
+def embed_thumbnail_in_folder(folder: Directory, image_file: File | ImageOperations, media: str, progress_callback: Callable | None = None) -> dict:
     '''
     Embeds a thumbnail in each Video/Audio File in a Folder
     
@@ -453,15 +454,19 @@ def embed_thumbnail_in_folder(folder: Directory, image_file: File | ImageOperati
 
         try:
             if media == 'Video':
-               result = file.embed_thumbnail_video(image_file, new_file)
+                result = file.embed_thumbnail_video(image_file, new_file)
             elif media == 'Audio':
                 result = file.embed_thumbnail_audio(image_file, new_file)
 
             Insiders.append(result)
             if result['State'] == 1:
-                print(f"✅ Thumbnail Embedded successfully: {file.name + file.ext}")
+                msg = f"✅ Thumbnail Embedded successfully: {file.name + file.ext}"
+                if progress_callback:
+                    progress_callback(msg)
             else:
-                print(f"❌ {file.name + file.ext}: {result['Error']}")
+                msg = f"❌ {file.name + file.ext}: {result['Error']}"
+                if progress_callback:
+                    progress_callback(msg)
 
         except Exception as e:
             Insiders.append({'File': file.path, 'Process': f'Embed Thumbnail in {media}', 'State': 0,
@@ -503,8 +508,7 @@ def download_thumbnail(url: str) -> bool | ImageOperations:
                         with open(str(image_file), 'wb') as handler:
                             handler.write(r.content)
                         return image_file
-                    except Exception as e:
-                        print(f"Error: {e}")
+                    except Exception:
                         return False
                 else:
                     return False
