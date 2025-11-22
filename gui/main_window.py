@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QStackedWidget, QFrame, 
                              QMessageBox, QToolButton, QButtonGroup)
 from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QCloseEvent
 import os
 import winsound
 from cli.logs import initialize_env
@@ -388,3 +388,27 @@ class MainWindow(QMainWindow):
         except Exception:
             # Best-effort centering — do not crash the app on any error
             pass
+
+    def has_active_processes(self):
+        """Check all pages for active background processes."""
+        if self.download_page.is_processing():
+            return True
+        # Add checks for other pages here if they implement background processing
+        return False
+
+    def closeEvent(self, event: QCloseEvent):
+        if self.has_active_processes():
+            reply = QMessageBox.warning(
+                self,
+                "Active Processes",
+                "There are active processes (downloads, etc.) running.\nAre you sure you want to quit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
