@@ -321,6 +321,7 @@ class MainWindow(QMainWindow):
         self._set_active_tab(1)
         
     def show_pdf(self):
+        self.pdf_page.go_to_menu()
         self._set_active_tab(2)
         
     def show_video(self):
