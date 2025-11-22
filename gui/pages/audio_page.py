@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
                              QLineEdit, QTextEdit, QFileDialog, QComboBox, QFrame, QScrollArea)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+import time
 from PyQt6.QtGui import QFont, QCursor
 from cli.File import Directory
 from cli.video import Audio, embed_thumbnail_in_folder
@@ -80,6 +81,7 @@ class AudioPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.active_workers = []
         self.init_ui()
         
     def init_ui(self):
@@ -201,25 +203,58 @@ class AudioPage(QWidget):
         self.result_text.append("⏳ Processing...")
         try:
             image = ImageOperations(image_path)
-            
+
             if self.mode_combo.currentIndex() == 0:
                 audio = Audio(audio_path)
                 result = audio.embed_thumbnail_audio(image)
                 write_log(result, 'Audio')
-                
+
                 if result.get('State'):
                     self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
                 else:
                     self.result_text.append(f"❌ Error: {result.get('Error')}")
             else:
                 folder = Directory(audio_path)
-                result = embed_thumbnail_in_folder(folder, image, 'Audio')
-                write_log(result, 'Audio')
-                
-                if result.get('State'):
-                    self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
-                else:
-                    self.result_text.append(f"❌ Error: {result.get('Error')}")
+                self.result_text.append(f"📂 Batch processing folder: {folder.basename}...")
+
+                # Run batch embedding in background
+                class AudioBatchWorker(QThread):
+                    progress = pyqtSignal(str)
+                    finished = pyqtSignal(dict)
+
+                    def __init__(self, folder_path: str, image_path: str):
+                        super().__init__()
+                        self.folder_path = folder_path
+                        self.image_path = image_path
+
+                    def run(self):
+                        try:
+                            folder = Directory(self.folder_path)
+                            image = ImageOperations(self.image_path)
+                            res = embed_thumbnail_in_folder(folder, image, 'Audio', progress_callback=lambda m: self.progress.emit(m))
+                            self.finished.emit(res)
+                        except Exception as e:
+                            now = time.ctime()
+                            self.finished.emit({'File': self.folder_path, 'Process': 'Embed Thumbnail in Audio', 'State': 0,
+                                                'Error': str(e), 'Datetime': now})
+
+                worker = AudioBatchWorker(audio_path, image_path)
+                self.active_workers.append(worker)
+                worker.progress.connect(lambda m: self.result_text.append(m))
+
+                def on_finished(res):
+                    write_log(res, 'Audio')
+                    if res.get('State'):
+                        self.result_text.append(f"✅ {res.get('Message')}\nSaved to: {res.get('Save Location')}")
+                    else:
+                        self.result_text.append(f"❌ Error: {res.get('Error')}")
+                    try:
+                        self.active_workers.remove(worker)
+                    except ValueError:
+                        pass
+
+                worker.finished.connect(on_finished)
+                worker.start()
         except Exception as e:
              self.result_text.append(f"❌ Unexpected Error: {str(e)}")
             
