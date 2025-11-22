@@ -1,11 +1,16 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QLineEdit, QTextEdit, QFileDialog, QComboBox, QFrame, QScrollArea, QStackedWidget)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QCursor
 from cli.File import Directory
 from cli.video import Video, embed_thumbnail_in_folder
 from cli.images import ImageOperations
 from cli.logs import write_log
+
+import time
+
+
+    
 
 # --- THEME CONFIGURATION ---
 THEME_BG = "#1e1e2e"
@@ -129,6 +134,8 @@ class VideoPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        # Keep track of any running workers so MainWindow can check active processes if needed
+        self.active_workers = []
         self.init_ui()
 
     def init_ui(self):
@@ -444,14 +451,27 @@ class VideoPage(QWidget):
             else:
                 self.thumb_result.append(f"❌ Error: {result.get('Error')}")
         else:
+            # Run batch embedding in background thread to avoid freezing UI
             folder = Directory(path)
-            result = embed_thumbnail_in_folder(folder, image, 'Video')
-            write_log(result, 'Video')
+            self.thumb_result.append(f"📂 Batch processing folder: {folder.basename}...")
+            worker = BatchEmbedWorker(path, image_path, 'Video')
+            self.active_workers.append(worker)
 
-            if result.get('State'):
-                self.thumb_result.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
-            else:
-                self.thumb_result.append(f"❌ Error: {result.get('Error')}")
+            worker.progress.connect(lambda m: self.thumb_result.append(m))
+
+            def on_finished(res):
+                write_log(res, 'Video')
+                if res.get('State'):
+                    self.thumb_result.append(f"✅ {res.get('Message')}\nSaved to: {res.get('Save Location')}")
+                else:
+                    self.thumb_result.append(f"❌ Error: {res.get('Error')}")
+                try:
+                    self.active_workers.remove(worker)
+                except ValueError:
+                    pass
+
+            worker.finished.connect(on_finished)
+            worker.start()
 
     def process_gif(self):
         video_path = self.gif_video_input.text().strip()
@@ -501,33 +521,24 @@ class VideoPage(QWidget):
 
             self.extract_result.append(f"📂 Batch processing folder: {folder.basename}...")
 
-            success_count = 0
-            fail_count = 0
-            supported_exts = Video._supported
+            # Run batch extract in background
+            worker = BatchExtractWorker(path)
+            self.active_workers.append(worker)
+            worker.progress.connect(lambda m: self.extract_result.append(m))
 
-            files = folder.list_dir()
-            if not files:
-                 self.extract_result.append("⚠️ Folder is empty.")
-                 return
+            def on_finished(res):
+                # res contains summary
+                if res.get('State') and res.get('Message') == 'Batch Complete':
+                    self.extract_result.append(f"\n🏁 Batch Complete. Success: {res.get('Success')}, Failed: {res.get('Failed')}")
+                else:
+                    self.extract_result.append(f"❌ Error: {res.get('Error')}")
+                try:
+                    self.active_workers.remove(worker)
+                except ValueError:
+                    pass
 
-            for filename in files:
-                path_builder = Directory(path)
-                path_builder.join(filename)
-                vid = Video(str(path_builder))
-
-                if vid.ext.lower() in supported_exts:
-                    self.extract_result.append(f"➡️ Processing: {filename}...")
-                    result = vid.extract_original_audio()
-                    write_log(result, 'Video')
-
-                    if result.get('State'):
-                        self.extract_result.append(f"   ✅ Extracted")
-                        success_count += 1
-                    else:
-                        self.extract_result.append(f"   ❌ Failed: {result.get('Error')}")
-                        fail_count += 1
-
-            self.extract_result.append(f"\n🏁 Batch Complete. Success: {success_count}, Failed: {fail_count}")
+            worker.finished.connect(on_finished)
+            worker.start()
 
     def reset(self):
         # Optional: Reset inputs only if desired, but user asked to persist state on navigation.
@@ -536,3 +547,69 @@ class VideoPage(QWidget):
         # We can keep reset() as a way to explicitly clear inputs if we add a "Reset" button,
         # or just leave it empty or remove it.
         pass
+
+class BatchEmbedWorker(QThread):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(dict)
+
+    def __init__(self, folder_path: str, image_path: str, media: str):
+        super().__init__()
+        self.folder_path = folder_path
+        self.image_path = image_path
+        self.media = media
+
+    def run(self):
+        try:
+            folder = Directory(self.folder_path)
+            image = ImageOperations(self.image_path)
+            result = embed_thumbnail_in_folder(folder, image, self.media, progress_callback=lambda m: self.progress.emit(m))
+            self.finished.emit(result)
+        except Exception as e:
+            now = time.ctime()
+            self.finished.emit({'File': self.folder_path, 'Process': f'Embed Thumbnail in {self.media}', 'State': 0,
+                                'Error': str(e), 'Datetime': now})
+
+
+class BatchExtractWorker(QThread):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(dict)
+
+    def __init__(self, folder_path: str):
+        super().__init__()
+        self.folder_path = folder_path
+
+    def run(self):
+        now = time.ctime()
+        folder = Directory(self.folder_path)
+        if not folder.isdir():
+            self.finished.emit({'File': self.folder_path, 'Process': 'Extract Original Audio', 'State': 0,
+                                'Error': "Folder doesn't Exist", 'Datetime': now})
+            return
+
+        success_count = 0
+        fail_count = 0
+        supported_exts = Video._supported
+
+        files = folder.list_dir()
+        if not files:
+            self.finished.emit({'File': self.folder_path, 'Process': 'Extract Original Audio', 'State': 0,
+                                'Error': 'Folder is empty', 'Datetime': now})
+            return
+
+        for filename in files:
+            path_builder = Directory(self.folder_path)
+            path_builder.join(filename)
+            vid = Video(str(path_builder))
+
+            if vid.ext.lower() in supported_exts:
+                self.progress.emit(f"➡️ Processing: {filename}...")
+                result = vid.extract_original_audio()
+                if result.get('State'):
+                    self.progress.emit(f"   ✅ Extracted: {filename}")
+                    success_count += 1
+                else:
+                    self.progress.emit(f"   ❌ Failed: {filename}: {result.get('Error')}")
+                    fail_count += 1
+
+        self.finished.emit({'File': self.folder_path, 'Process': 'Extract Original Audio', 'State': 1,
+                            'Message': 'Batch Complete', 'Success': success_count, 'Failed': fail_count, 'Datetime': now})
