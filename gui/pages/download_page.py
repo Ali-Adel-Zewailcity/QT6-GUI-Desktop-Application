@@ -640,6 +640,27 @@ class DownloadPage(QWidget):
             self.fetch_worker.wait()
         self.fetch_worker = None
 
+    def is_processing(self) -> bool:
+        """Return True if any background fetch or download worker is currently running.
+
+        This is used by `MainWindow.has_active_processes()` to determine whether the
+        application should warn the user on quit.
+        """
+        try:
+            # Any active download workers?
+            for w in self.workers:
+                if hasattr(w, 'isRunning') and w.isRunning():
+                    return True
+
+            # Active fetch worker?
+            if self.fetch_worker and hasattr(self.fetch_worker, 'isRunning') and self.fetch_worker.isRunning():
+                return True
+        except Exception:
+            # Be conservative: if anything goes wrong, report that processing is happening
+            return True
+
+        return False
+
     def prepare_new_fetch(self):
         """Clears UI elements and internal state for a new fetch without leaving the page."""
 
@@ -759,7 +780,7 @@ class DownloadPage(QWidget):
         playlist_text.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent; color: #11111b;")
         playlist_btn_layout.addWidget(playlist_icon)
         playlist_btn_layout.addWidget(playlist_text, 1, Qt.AlignmentFlag.AlignCenter)
-        btn_layout.addWidget(playlist_icon)
+        btn_layout.addWidget(playlist_btn)
 
         # Fix: add text, not icon again
         # But wait, the previous code added icon then text.
