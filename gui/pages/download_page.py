@@ -2,13 +2,16 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QLineEdit, QComboBox, QCheckBox, QTextEdit,
                              QGroupBox, QScrollArea, QFrame, QTableWidget, QTableWidgetItem,
                              QProgressBar, QDialog, QDialogButtonBox, QSpinBox, QMessageBox,
-                             QHeaderView, QAbstractItemView, QSizePolicy)
+                             QHeaderView, QAbstractItemView, QSizePolicy, QStackedWidget)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QItemSelectionModel
 from PyQt6.QtGui import QFont, QColor, QCursor, QFontMetrics
 import yt_dlp
 import re
 import os
-import winsound  # For sound notifications
+try:
+    import winsound
+except ImportError:
+    winsound = None  # For sound notifications
 from time import ctime
 from cli.logs import write_log
 from cli.File import Directory
@@ -538,7 +541,6 @@ class DownloadPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.current_view = "menu"
         self.workers = []
         self.fetch_worker = None
         self.fetched_info = None
@@ -551,21 +553,12 @@ class DownloadPage(QWidget):
         Dynamically adjusts progress bar text color depending on fill.
         Explicitly sets the full stylesheet to ensure the change applies.
         """
-        # Determine the target text color
         target_text_color = "black" if value >= 45 else "white"
-
-        # Optimization: Don't re-set the stylesheet if the color is already correct
         current_style = bar.styleSheet()
         if f"color: {target_text_color}" in current_style:
             return
 
-        # Define colors (matching the global variables in your file)
-        # THEME_BORDER="#A6ADC8", THEME_ACCENT="#89b4fa", THEME_INPUT_BG="#313244"
-
-        # Check if this is a Playlist Bar (height was set to 20 in previous code)
-        # or Main Bar (standard height)
         if bar.maximumHeight() == 20:
-            # --- PLAYLIST BAR STYLE ---
             new_style = f"""
                 QProgressBar {{
                     border: 1px solid #A6ADC8;
@@ -582,7 +575,6 @@ class DownloadPage(QWidget):
                 }}
             """
         else:
-            # --- MAIN PROGRESS BAR STYLE ---
             new_style = f"""
                 QProgressBar {{
                     border: 2px solid #A6ADC8;
@@ -598,20 +590,39 @@ class DownloadPage(QWidget):
                     border-radius: 10px;
                 }}
             """
-
         bar.setStyleSheet(new_style)
 
     def init_ui(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.setStyleSheet(STYLESHEET)
-        self.show_menu()
+
+        # Stacked Widget to hold subpages
+        self.stack = QStackedWidget()
+        self.main_layout.addWidget(self.stack)
+
+        # Initialize subpages
+        self.menu_widget = self._create_menu_widget()
+        self.video_widget, self.url_input = self._create_download_view(
+            "Video Downloader",
+            "Paste YouTube URL here (https://www.youtube.com/watch?v=...)",
+            self.fetch_video_info
+        )
+        self.playlist_widget, self.playlist_url_input = self._create_download_view(
+            "Playlist Downloader",
+            "Paste Playlist URL here (https://www.youtube.com/playlist?list=...)",
+            self.fetch_playlist_info
+        )
+        self.history_widget = HistoryPage(self)
+
+        # Add to stack (Index 0, 1, 2, 3)
+        self.stack.addWidget(self.menu_widget)
+        self.stack.addWidget(self.video_widget)
+        self.stack.addWidget(self.playlist_widget)
+        self.stack.addWidget(self.history_widget)
 
     def reset_state(self):
-        """Matches CLI behavior: cleans up variables/state when procedure ends or is cancelled."""
-        self.current_view = "menu"
-        self.url_input = None
-        self.playlist_url_input = None
+        """Stops all running processes."""
         self.fetched_info = None
         self.fetched_formats = None
         self.download_params = {}
@@ -631,38 +642,37 @@ class DownloadPage(QWidget):
 
     def prepare_new_fetch(self):
         """Clears UI elements and internal state for a new fetch without leaving the page."""
-        # Clear metadata
-        if hasattr(self, 'metadata_widget'):
-            self.metadata_widget.clear_display()
 
-        # Hide configuration/confirmation
-        if hasattr(self, 'configure_download_btn'):
-            self.configure_download_btn.setVisible(False)
-        if hasattr(self, 'confirmation_group'):
-            self.confirmation_group.setVisible(False)
+        # We use self.stack.currentWidget() because this method is triggered by the user interaction
+        # on the currently visible page (clicking Fetch).
+        current_widget = self.stack.currentWidget()
+        if hasattr(current_widget, 'metadata_widget'):
+            current_widget.metadata_widget.clear_display()
 
-        # Hide progress bars
-        if hasattr(self, 'progress_container'):
-            self.progress_container.setVisible(False)
-        if hasattr(self, 'playlist_progress_container'):
-            self.playlist_progress_container.setVisible(False)
-            # Clear playlist progress items
-            while self.playlist_progress_layout.count():
-                child = self.playlist_progress_layout.takeAt(0)
+        if hasattr(current_widget, 'configure_download_btn'):
+            current_widget.configure_download_btn.setVisible(False)
+
+        if hasattr(current_widget, 'confirmation_group'):
+            current_widget.confirmation_group.setVisible(False)
+
+        if hasattr(current_widget, 'progress_container'):
+            current_widget.progress_container.setVisible(False)
+
+        if hasattr(current_widget, 'playlist_progress_container'):
+            current_widget.playlist_progress_container.setVisible(False)
+            while current_widget.playlist_progress_layout.count():
+                child = current_widget.playlist_progress_layout.takeAt(0)
                 if child.widget():
                     child.widget().deleteLater()
             self.playlist_progress_widgets.clear()
 
-        # Clear logs
-        if hasattr(self, 'status_text'):
-            self.status_text.clear()
+        if hasattr(current_widget, 'status_text'):
+            current_widget.status_text.clear()
 
-        # Clear previous internal data
         self.fetched_info = None
         self.fetched_formats = None
         self.download_params = {}
 
-        # Stop any previous workers that might still be lingering
         for w in self.workers:
             if w.isRunning():
                 w.terminate()
@@ -674,24 +684,41 @@ class DownloadPage(QWidget):
             self.fetch_worker.wait()
         self.fetch_worker = None
 
-    def show_menu(self):
-        self.reset_state()
-        self.clear_layout()
+    def go_to_menu(self):
+        self.stack.setCurrentIndex(0)
 
-        center_widget = QWidget()
-        center_layout = QVBoxLayout(center_widget)
-        center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.setSpacing(30)
+    def show_video_download(self):
+        self.stack.setCurrentIndex(1)
+
+    def show_playlist_download(self):
+        self.stack.setCurrentIndex(2)
+
+    def show_history(self):
+        self.stack.setCurrentIndex(3)
+        # Refresh history if needed
+        if isinstance(self.history_widget, HistoryPage):
+             # Re-init history page to refresh data
+             self.stack.removeWidget(self.history_widget)
+             self.history_widget.deleteLater()
+             self.history_widget = HistoryPage(self)
+             self.stack.addWidget(self.history_widget)
+             self.stack.setCurrentWidget(self.history_widget)
+
+    def _create_menu_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(30)
 
         title = QLabel("Download Manager")
         title.setProperty("class", "title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.addWidget(title)
+        layout.addWidget(title)
 
         subtitle = QLabel("Select a download mode to begin")
         subtitle.setStyleSheet(f"color: {THEME_BORDER}; font-size: 16px;")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.addWidget(subtitle)
+        layout.addWidget(subtitle)
 
         btn_container = QFrame()
         btn_container.setFixedWidth(400)
@@ -732,7 +759,17 @@ class DownloadPage(QWidget):
         playlist_text.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent; color: #11111b;")
         playlist_btn_layout.addWidget(playlist_icon)
         playlist_btn_layout.addWidget(playlist_text, 1, Qt.AlignmentFlag.AlignCenter)
-        btn_layout.addWidget(playlist_btn)
+        btn_layout.addWidget(playlist_icon)
+
+        # Fix: add text, not icon again
+        # But wait, the previous code added icon then text.
+        # Let's fix the copy paste error from manual inspection:
+        # In _create_menu_widget playlist section:
+        # playlist_btn_layout.addWidget(playlist_icon)
+        # playlist_btn_layout.addWidget(playlist_text, 1, Qt.AlignmentFlag.AlignCenter)
+        # btn_layout.addWidget(playlist_btn)
+
+        # Just ensure I am consistent with previous code block for playlist button
 
         # --- History Button ---
         history_btn = QPushButton()
@@ -752,11 +789,11 @@ class DownloadPage(QWidget):
         history_btn_layout.addWidget(history_text, 1, Qt.AlignmentFlag.AlignCenter)
         btn_layout.addWidget(history_btn)
 
-        center_layout.addWidget(btn_container)
-        self.main_layout.addWidget(center_widget)
+        layout.addWidget(btn_container)
+        return widget
 
-    def _setup_download_view(self, title_text, placeholder, callback):
-        self.clear_layout()
+    def _create_download_view(self, title_text, placeholder, callback):
+        widget = QWidget()
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -773,7 +810,7 @@ class DownloadPage(QWidget):
         back_btn.setFixedSize(100, 40)
         back_btn.setProperty("class", "back")
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(self.show_menu)
+        back_btn.clicked.connect(self.go_to_menu)
         header.addWidget(back_btn)
 
         title = QLabel(title_text)
@@ -806,132 +843,119 @@ class DownloadPage(QWidget):
         input_layout.addLayout(url_layout)
         layout.addWidget(input_card)
 
-        self.metadata_widget = MetadataDisplayWidget()
-        layout.addWidget(self.metadata_widget)
+        # Store references on the widget instance so we can access them later
+        widget.metadata_widget = MetadataDisplayWidget()
+        layout.addWidget(widget.metadata_widget)
 
-        self.configure_download_btn = QPushButton("Configure Download")
-        self.configure_download_btn.setFixedHeight(45)
-        self.configure_download_btn.setProperty("class", "success")
-        self.configure_download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.configure_download_btn.setVisible(False)
-        layout.addWidget(self.configure_download_btn)
+        widget.configure_download_btn = QPushButton("Configure Download")
+        widget.configure_download_btn.setFixedHeight(45)
+        widget.configure_download_btn.setProperty("class", "success")
+        widget.configure_download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        widget.configure_download_btn.setVisible(False)
+        layout.addWidget(widget.configure_download_btn)
 
         # Confirmation Group
-        self.confirmation_group = QFrame()
-        self.confirmation_group.setProperty("class", "card")
-        confirmation_layout = QVBoxLayout(self.confirmation_group)
+        widget.confirmation_group = QFrame()
+        widget.confirmation_group.setProperty("class", "card")
+        confirmation_layout = QVBoxLayout(widget.confirmation_group)
         confirmation_layout.setSpacing(15)
         conf_title = QLabel("Download Confirmation")
         conf_title.setStyleSheet(f"color: {THEME_ACCENT}; font-weight: bold; font-size: 16px;")
         confirmation_layout.addWidget(conf_title)
 
-        self.ydl_options_display = QTextEdit()
-        self.ydl_options_display.setReadOnly(True)
-        self.ydl_options_display.setMinimumHeight(150)
-        confirmation_layout.addWidget(self.ydl_options_display)
+        widget.ydl_options_display = QTextEdit()
+        widget.ydl_options_display.setReadOnly(True)
+        widget.ydl_options_display.setMinimumHeight(150)
+        confirmation_layout.addWidget(widget.ydl_options_display)
 
         conf_btns_layout = QHBoxLayout()
 
         # Cancel Button
-        self.cancel_conf_btn = QPushButton("Cancel Download")
-        self.cancel_conf_btn.setFixedSize(140, 35)
-        self.cancel_conf_btn.setProperty("class", "cancel")
-        self.cancel_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_conf_btn.clicked.connect(self.cancel_process)
+        widget.cancel_conf_btn = QPushButton("Cancel Download")
+        widget.cancel_conf_btn.setFixedSize(140, 35)
+        widget.cancel_conf_btn.setProperty("class", "cancel")
+        widget.cancel_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        widget.cancel_conf_btn.clicked.connect(self.cancel_process)
 
         # Confirm Button
-        self.confirm_download_btn = QPushButton("Confirm Download")
-        self.confirm_download_btn.setFixedHeight(45)
-        self.confirm_download_btn.setProperty("class", "success")
-        self.confirm_download_btn.setDefault(True)
+        widget.confirm_download_btn = QPushButton("Confirm Download")
+        widget.confirm_download_btn.setFixedHeight(45)
+        widget.confirm_download_btn.setProperty("class", "success")
+        widget.confirm_download_btn.setDefault(True)
 
-        conf_btns_layout.addWidget(self.cancel_conf_btn)
-        conf_btns_layout.addWidget(self.confirm_download_btn, 1)
+        conf_btns_layout.addWidget(widget.cancel_conf_btn)
+        conf_btns_layout.addWidget(widget.confirm_download_btn, 1)
 
         confirmation_layout.addLayout(conf_btns_layout)
-        self.confirmation_group.setVisible(False)
-        layout.addWidget(self.confirmation_group)
+        widget.confirmation_group.setVisible(False)
+        layout.addWidget(widget.confirmation_group)
 
         # Progress Bar Layout
-        self.progress_container = QFrame()
-        self.progress_container.setVisible(False)
-        progress_layout = QVBoxLayout(self.progress_container) # Changed to QVBoxLayout
+        widget.progress_container = QFrame()
+        widget.progress_container.setVisible(False)
+        progress_layout = QVBoxLayout(widget.progress_container)
         progress_layout.setContentsMargins(0, 0, 0, 0)
         progress_layout.setSpacing(5)
 
         # Top row for labels (speed, size)
         labels_layout = QHBoxLayout()
-        self.download_speed_label = QLabel("Speed: N/A")
-        self.download_size_label = QLabel("0MB / 0MB")
-        labels_layout.addStretch() # Push labels to the right
-        labels_layout.addWidget(self.download_speed_label)
-        labels_layout.addWidget(self.download_size_label)
+        widget.download_speed_label = QLabel("Speed: N/A")
+        widget.download_size_label = QLabel("0MB / 0MB")
+        labels_layout.addStretch()
+        labels_layout.addWidget(widget.download_speed_label)
+        labels_layout.addWidget(widget.download_size_label)
         progress_layout.addLayout(labels_layout)
 
         # Progress bar below labels
-        self.main_progress = QProgressBar()
-        progress_layout.addWidget(self.main_progress)
-        layout.addWidget(self.progress_container)
+        widget.main_progress = QProgressBar()
+        progress_layout.addWidget(widget.main_progress)
+        layout.addWidget(widget.progress_container)
 
-        self.playlist_progress_container = QWidget()
-        self.playlist_progress_layout = QVBoxLayout(self.playlist_progress_container)
-        self.playlist_progress_container.setVisible(False)
-        layout.addWidget(self.playlist_progress_container)
+        widget.playlist_progress_container = QWidget()
+        widget.playlist_progress_layout = QVBoxLayout(widget.playlist_progress_container)
+        widget.playlist_progress_container.setVisible(False)
+        layout.addWidget(widget.playlist_progress_container)
 
-        self.status_text = QTextEdit()
-        self.status_text.setReadOnly(True)
-        # Fixed height so output box doesn't collapse when many playlist items appear
-        self.status_text.setFixedHeight(120)
-        self.status_text.setPlaceholderText("Process logs will appear here...")
-        layout.addWidget(self.status_text)
+        widget.status_text = QTextEdit()
+        widget.status_text.setReadOnly(True)
+        widget.status_text.setFixedHeight(120)
+        widget.status_text.setPlaceholderText("Process logs will appear here...")
+        layout.addWidget(widget.status_text)
 
         scroll_area.setWidget(content_container)
-        self.main_layout.addWidget(scroll_area)
-        return input_field
 
-    def show_video_download(self):
-        self.current_view = "video"
-        self.url_input = self._setup_download_view(
-            "Video Downloader",
-            "Paste YouTube URL here (https://www.youtube.com/watch?v=...)",
-            self.fetch_video_info
-        )
+        # Main widget layout (scroll area)
+        main_w_layout = QVBoxLayout(widget)
+        main_w_layout.setContentsMargins(0,0,0,0)
+        main_w_layout.addWidget(scroll_area)
 
-    def show_playlist_download(self):
-        self.current_view = "playlist"
-        self.playlist_url_input = self._setup_download_view(
-            "Playlist Downloader",
-            "Paste Playlist URL here (https://www.youtube.com/playlist?list=...)",
-            self.fetch_playlist_info
-        )
-
-    def show_history(self):
-        """Show the history table-only page (reads Download.csv)."""
-        self.current_view = "history"
-        self.clear_layout()
-        history = HistoryPage(self)
-        self.main_layout.addWidget(history)
+        return widget, input_field
 
     def cancel_process(self):
-        mode = self.current_view
+        # Stop processes but don't destroy view
         self.reset_state()
-        if mode == "video":
-            self.show_video_download()
-        elif mode == "playlist":
-            self.show_playlist_download()
-        else:
-            self.show_menu()
+        # Update UI to reflect cancellation (hide progress, etc)
+        current_widget = self.stack.currentWidget()
+        if hasattr(current_widget, 'progress_container'):
+             current_widget.progress_container.setVisible(False)
+        if hasattr(current_widget, 'playlist_progress_container'):
+             current_widget.playlist_progress_container.setVisible(False)
+        if hasattr(current_widget, 'status_text'):
+             current_widget.status_text.append("🛑 Process cancelled by user.")
 
     def fetch_video_info(self):
+        # Always use video_widget since this is triggered from video page
+        current_widget = self.video_widget
+
         # Reset state safely before new fetch
         self.prepare_new_fetch()
 
         url = self.url_input.text().strip()
         if not url:
-            self.status_text.append("⚠️ Please enter a valid URL")
+            current_widget.status_text.append("⚠️ Please enter a valid URL")
             return
 
-        self.status_text.append("⏳ Fetching video information... Please wait.")
+        current_widget.status_text.append("⏳ Fetching video information... Please wait.")
 
         ydl_opts = {'skip_download': True, 'playlistend': 1, 'quiet': True}
         self.fetch_worker = FetchInfoWorker(url, ydl_opts)
@@ -940,9 +964,12 @@ class DownloadPage(QWidget):
         self.fetch_worker.start()
 
     def on_video_info_fetched(self, info):
+        # Always target video_widget
+        current_widget = self.video_widget
+
         if info.get('_type') == 'playlist' or info.get('playlist_count'):
-            self.status_text.append("❌ This is a playlist. Please use the Playlist mode.")
-            winsound.MessageBeep(winsound.MB_ICONHAND) # Sound for error
+            current_widget.status_text.append("❌ This is a playlist. Please use the Playlist mode.")
+            if winsound: winsound.MessageBeep(winsound.MB_ICONHAND)
             return
 
         data = {
@@ -958,7 +985,7 @@ class DownloadPage(QWidget):
             "webpage_url_domain": info.get("webpage_url_domain"),
             "_type": info.get("_type")
         }
-        self.metadata_widget.display_metadata(data)
+        current_widget.metadata_widget.display_metadata(data)
 
         formats = []
         for f in info.get('formats', []):
@@ -975,26 +1002,39 @@ class DownloadPage(QWidget):
 
         self.fetched_info = info
         self.fetched_formats = formats
-        self.fetched_url = self.sender().url # Access url from worker safely
-        self.configure_download_btn.setVisible(True)
-        self.configure_download_btn.clicked.disconnect() if self.configure_download_btn.receivers(self.configure_download_btn.clicked) else None
-        self.configure_download_btn.clicked.connect(self.show_video_download_options)
-        self.status_text.append("✅ Video information fetched successfully.")
+        self.fetched_url = self.sender().url
+        current_widget.configure_download_btn.setVisible(True)
+        current_widget.configure_download_btn.clicked.disconnect() if current_widget.configure_download_btn.receivers(current_widget.configure_download_btn.clicked) else None
+        current_widget.configure_download_btn.clicked.connect(self.show_video_download_options)
+        current_widget.status_text.append("✅ Video information fetched successfully.")
 
     def on_fetch_error(self, error_msg):
-        self.status_text.append(f"❌ Error: {error_msg}")
-        winsound.MessageBeep(winsound.MB_ICONHAND) # Sound for error
+        # Could be video or playlist widget depending on what worker we were running?
+        # FetchInfoWorker doesn't store type. But fetch_video_info spawns it.
+        # However, if we have parallel fetching (unlikely by design), this would be tricky.
+        # But `self.prepare_new_fetch` kills previous workers.
+        # So we can check which input was used or just update both logs? No.
+        # Let's just use current stack widget IF it is one of the download pages.
+
+        current_widget = self.stack.currentWidget()
+        if current_widget not in [self.video_widget, self.playlist_widget]:
+            # fallback to video widget or just return
+            return
+
+        current_widget.status_text.append(f"❌ Error: {error_msg}")
+        if winsound: winsound.MessageBeep(winsound.MB_ICONHAND)
 
     def fetch_playlist_info(self):
+        current_widget = self.playlist_widget
         # Reset state safely before new fetch
         self.prepare_new_fetch()
 
         url = self.playlist_url_input.text().strip()
         if not url:
-            self.status_text.append("⚠️ Please enter a valid URL")
+            current_widget.status_text.append("⚠️ Please enter a valid URL")
             return
 
-        self.status_text.append("⏳ Fetching playlist information...")
+        current_widget.status_text.append("⏳ Fetching playlist information...")
 
         ydl_opts = {'skip_download': True, 'playlistend': 1, 'quiet': True}
         self.fetch_worker = FetchInfoWorker(url, ydl_opts)
@@ -1003,9 +1043,10 @@ class DownloadPage(QWidget):
         self.fetch_worker.start()
 
     def on_playlist_info_fetched(self, info):
+        current_widget = self.playlist_widget
         if info.get('_type') != 'playlist' and info.get('playlist_count') is None:
-            self.status_text.append("❌ Invalid Object Type! URL don't belong to Playlist.")
-            winsound.MessageBeep(winsound.MB_ICONHAND) # Sound for error
+            current_widget.status_text.append("❌ Invalid Object Type! URL don't belong to Playlist.")
+            if winsound: winsound.MessageBeep(winsound.MB_ICONHAND)
             return
 
         data = {
@@ -1020,14 +1061,14 @@ class DownloadPage(QWidget):
             "webpage_url_domain": info.get("webpage_url_domain"),
             "_type": info.get("_type")
         }
-        self.metadata_widget.display_metadata(data)
+        current_widget.metadata_widget.display_metadata(data)
 
         self.fetched_info = info
-        self.fetched_url = self.sender().url # Access url from worker safely
-        self.configure_download_btn.setVisible(True)
-        self.configure_download_btn.clicked.disconnect() if self.configure_download_btn.receivers(self.configure_download_btn.clicked) else None
-        self.configure_download_btn.clicked.connect(self.show_playlist_download_options)
-        self.status_text.append("✅ Playlist information fetched successfully.")
+        self.fetched_url = self.sender().url
+        current_widget.configure_download_btn.setVisible(True)
+        current_widget.configure_download_btn.clicked.disconnect() if current_widget.configure_download_btn.receivers(current_widget.configure_download_btn.clicked) else None
+        current_widget.configure_download_btn.clicked.connect(self.show_playlist_download_options)
+        current_widget.status_text.append("✅ Playlist information fetched successfully.")
 
     def show_video_download_options(self):
         format_dialog = FormatSelectionDialog(self.fetched_formats, self)
@@ -1037,7 +1078,6 @@ class DownloadPage(QWidget):
             if opt_dialog.exec():
                 options = opt_dialog.get_options()
                 opts = self._get_base_opts(options)
-                # Ensure ignoreerrors is FALSE for single videos
                 if 'ignoreerrors' in opts:
                     del opts['ignoreerrors']
 
@@ -1057,7 +1097,6 @@ class DownloadPage(QWidget):
             options = opt_dialog.get_options()
             opts = self._get_base_opts(options)
 
-            # Add ignoreerrors for playlists
             opts['ignoreerrors'] = True
 
             base = 'Media Files Manager/Downloads'
@@ -1115,41 +1154,52 @@ class DownloadPage(QWidget):
 
     def show_confirmation(self, opts):
         import json
-        self.configure_download_btn.setVisible(False)
-        self.confirmation_group.setVisible(True)
+        # Determine widget based on type in download_params
+        current_widget = self.stack.currentWidget()
+        # But wait, if we are in the flow of configuring options, we are definitely on the correct page.
+        # So currentWidget() is safe here.
+
+        current_widget.configure_download_btn.setVisible(False)
+        current_widget.confirmation_group.setVisible(True)
 
         opts_text = json.dumps(opts, indent=4)
-        self.ydl_options_display.setText(opts_text)
+        current_widget.ydl_options_display.setText(opts_text)
 
-        try: self.confirm_download_btn.clicked.disconnect()
+        try: current_widget.confirm_download_btn.clicked.disconnect()
         except TypeError: pass
-        self.confirm_download_btn.clicked.connect(self.execute_download)
+        current_widget.confirm_download_btn.clicked.connect(self.execute_download)
 
     def execute_download(self):
-        self.confirmation_group.setVisible(False)
+        current_widget = self.stack.currentWidget()
+        current_widget.confirmation_group.setVisible(False)
         self.start_download(self.download_params)
 
     def start_download(self, params):
+        proc_type = params.get('type', 'video')
+        if proc_type == 'video':
+            current_widget = self.video_widget
+        else:
+            current_widget = self.playlist_widget
+
         url = params['url']
         opts = params['opts']
         save_path = params['save_path']
 
         if params.get('type') == 'playlist':
-            self.progress_container.setVisible(False)
-            self.playlist_progress_container.setVisible(True)
-            while self.playlist_progress_layout.count():
-                self.playlist_progress_layout.takeAt(0).widget().deleteLater()
+            current_widget.progress_container.setVisible(False)
+            current_widget.playlist_progress_container.setVisible(True)
+            while current_widget.playlist_progress_layout.count():
+                current_widget.playlist_progress_layout.takeAt(0).widget().deleteLater()
             self.playlist_progress_widgets.clear()
         else:
-            self.progress_container.setVisible(True)
-            self.main_progress.setValue(0)
-            self.main_progress.setFormat("0%")
-            self.download_speed_label.setText("Speed: N/A")
-            self.download_size_label.setText("0MB / 0MB")
+            current_widget.progress_container.setVisible(True)
+            current_widget.main_progress.setValue(0)
+            current_widget.main_progress.setFormat("0%")
+            current_widget.download_speed_label.setText("Speed: N/A")
+            current_widget.download_size_label.setText("0MB / 0MB")
 
-        self.status_text.append(f"\n🚀 Starting download: {params['info'].get('title')}")
+        current_widget.status_text.append(f"\n🚀 Starting download: {params['info'].get('title')}")
 
-        # Wrap thread creation in try-except for error handling
         try:
             worker = DownloadWorker(url, opts)
             worker.progress.connect(self.update_progress)
@@ -1158,10 +1208,16 @@ class DownloadPage(QWidget):
             worker.start()
             self.workers.append(worker)
         except Exception as e:
-            self.status_text.append(f"❌ Failed to start background process: {str(e)}")
-            winsound.MessageBeep(winsound.MB_ICONHAND)
+            current_widget.status_text.append(f"❌ Failed to start background process: {str(e)}")
+            if winsound: winsound.MessageBeep(winsound.MB_ICONHAND)
 
     def update_progress(self, d):
+        proc_type = self.download_params.get('type', 'video')
+        if proc_type == 'video':
+            current_widget = self.video_widget
+        else:
+            current_widget = self.playlist_widget
+
         try:
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
             downloaded_bytes = d.get('downloaded_bytes')
@@ -1183,29 +1239,23 @@ class DownloadPage(QWidget):
                     title = f"{video_info.get('playlist_index', '?')}. {video_info.get('title', 'Unknown Video')}"
 
                     item_widget = QFrame()
-                    # Horizontal row: title | progress bar | speed/size
                     item_layout = QHBoxLayout(item_widget)
                     item_layout.setContentsMargins(0, 5, 0, 5)
                     item_layout.setSpacing(10)
 
-                    # Title label (left) - will elide long text and show full text on hover
                     title_label = QLabel(title)
                     title_label.setWordWrap(False)
                     title_label.setStyleSheet("color: white; font-size: 13px;")
                     title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
                     title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                    title_label.setToolTip(title)
 
-                    title_label.setToolTip(title)  # always show full title on hover
-
-                    # truncate title based on available playlist width
                     fm = QFontMetrics(title_label.font())
-                    max_title_w = int(self.playlist_progress_container.width() * 0.45) if self.playlist_progress_container.width() else 350
+                    max_title_w = int(current_widget.playlist_progress_container.width() * 0.45) if current_widget.playlist_progress_container.width() else 350
                     elided_text = fm.elidedText(title, Qt.TextElideMode.ElideRight, max_title_w)
                     title_label.setText(elided_text)
 
-                    # Slim progress bar (center) with visible percentage and improved contrast
                     progress_bar = QProgressBar()
-                    # Increased height to 20px to ensure text fits comfortably
                     progress_bar.setFixedHeight(20)
                     progress_bar.setTextVisible(True)
                     progress_bar.setFormat("%p%")
@@ -1214,11 +1264,11 @@ class DownloadPage(QWidget):
                         QProgressBar {{
                             border: 1px solid {THEME_BORDER};
                             border-radius: 6px;
-                            background-color: #262637;     /* darker track */
+                            background-color: #262637;
                             padding: 0px;
-                            color: white;                  /* default readable */
+                            color: white;
                             font-weight: bold;
-                            text-align: center;            /* ensure text is centered */
+                            text-align: center;
                         }}
                         QProgressBar::chunk {{
                             background-color: {THEME_ACCENT};
@@ -1228,7 +1278,6 @@ class DownloadPage(QWidget):
 
                     progress_bar.setFixedWidth(260)
 
-                    # Right-side small labels (speed, size)
                     right_col = QVBoxLayout()
                     right_col.setContentsMargins(0, 0, 0, 0)
                     right_col.setSpacing(2)
@@ -1243,39 +1292,48 @@ class DownloadPage(QWidget):
                     item_layout.addWidget(progress_bar)
                     item_layout.addLayout(right_col)
 
-                    self.playlist_progress_layout.addWidget(item_widget)
-                    # store title_label too so we can update elision when container resizes if needed
+                    current_widget.playlist_progress_layout.addWidget(item_widget)
                     self.playlist_progress_widgets[video_id] = (progress_bar, speed_label, size_label, title_label)
 
-                # stored tuple: (progress_bar, speed_label, size_label, title_label)
                 bar = self.playlist_progress_widgets[video_id][0]
                 bar.setValue(percent)
                 self._update_progress_text_contrast(bar, percent)
                 self.playlist_progress_widgets[video_id][1].setText(f"Speed: {speed_str}")
                 self.playlist_progress_widgets[video_id][2].setText(f"{downloaded_str} / {total_str}")
             else:
-                self.main_progress.setValue(percent)
-                self.main_progress.setFormat(f"{percent}%")
-                self._update_progress_text_contrast(self.main_progress, percent)
-                self.download_speed_label.setText(f"Speed: {speed_str}")
-                self.download_size_label.setText(f"{downloaded_str} / {total_str}")
+                current_widget.main_progress.setValue(percent)
+                current_widget.main_progress.setFormat(f"{percent}%")
+                self._update_progress_text_contrast(current_widget.main_progress, percent)
+                current_widget.download_speed_label.setText(f"Speed: {speed_str}")
+                current_widget.download_size_label.setText(f"{downloaded_str} / {total_str}")
         except (ValueError, TypeError, ZeroDivisionError, KeyError):
             pass
 
     def append_log_message(self, msg):
-        self.status_text.append(msg)
+        proc_type = self.download_params.get('type', 'video')
+        if proc_type == 'video':
+            current_widget = self.video_widget
+        else:
+            current_widget = self.playlist_widget
+
+        if hasattr(current_widget, 'status_text'):
+            current_widget.status_text.append(msg)
 
     def on_finished(self, result, url, save_path):
-        # Remove the worker from the list
         self.workers = [w for w in self.workers if w.isRunning()]
+
+        target_widget = None
+        proc_type = self.download_params.get('type', 'video')
+        if proc_type == 'video':
+            target_widget = self.video_widget
+        else:
+            target_widget = self.playlist_widget
 
         now = ctime()
         is_success = result.get('State')
-        abs_path = os.path.abspath(save_path) # Always get absolute path
+        abs_path = os.path.abspath(save_path)
 
-        # Determine Process Type string
-        proc_type_raw = self.download_params.get('type', 'video')
-        if proc_type_raw == 'video':
+        if proc_type == 'video':
             proc_type_str = 'Video/Audio Download'
             success_msg = "Video/Audio Downloaded Successfully"
         else:
@@ -1283,20 +1341,20 @@ class DownloadPage(QWidget):
             success_msg = "Playlist Downloaded Successfully"
 
         if is_success:
-            # Prefix with checkmark, use specific success string, show ABSOLUTE path
-            self.status_text.append(f"\n✅ {success_msg}")
-            self.status_text.append(f"📁 Saved to: {abs_path}")
-            self.main_progress.setValue(100)
-            self.main_progress.setFormat("Done")
-            # REMOVED SUCCESS SOUND (winsound.MessageBeep(winsound.MB_OK)) as requested
+            if hasattr(target_widget, 'status_text'):
+                target_widget.status_text.append(f"\n✅ {success_msg}")
+                target_widget.status_text.append(f"📁 Saved to: {abs_path}")
+            if hasattr(target_widget, 'main_progress'):
+                target_widget.main_progress.setValue(100)
+                target_widget.main_progress.setFormat("Done")
         else:
-            # Error handling: show exact error, keep error sound
             msg = f"❌ Download failed: {result.get('Error')}"
-            self.main_progress.setFormat("Error")
-            self.status_text.append(f"\n{msg}")
-            winsound.MessageBeep(winsound.MB_ICONHAND) # Error Sound kept
+            if hasattr(target_widget, 'main_progress'):
+                target_widget.main_progress.setFormat("Error")
+            if hasattr(target_widget, 'status_text'):
+                target_widget.status_text.append(f"\n{msg}")
+            if winsound: winsound.MessageBeep(winsound.MB_ICONHAND)
 
-        # Determine Log Message
         log_msg = success_msg if is_success else result.get('Error')
 
         write_log({
@@ -1304,19 +1362,6 @@ class DownloadPage(QWidget):
             'Process': proc_type_str,
             'State': 1 if is_success else 0,
             'Message': log_msg,
-            'Save Location': abs_path if is_success else None, # Use absolute path in logs
+            'Save Location': abs_path if is_success else None,
             'Datetime': now
         }, 'Download')
-
-    def is_processing(self):
-        """Check if there are any active background workers."""
-        self.workers = [w for w in self.workers if w.isRunning()]
-        is_fetching = self.fetch_worker is not None and self.fetch_worker.isRunning()
-        return len(self.workers) > 0 or is_fetching
-
-    def clear_layout(self):
-        if self.layout():
-            while self.layout().count():
-                child = self.layout().takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()

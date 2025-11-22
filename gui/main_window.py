@@ -4,7 +4,10 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QCloseEvent
 import os
-import winsound
+try:
+    import winsound
+except ImportError:
+    winsound = None
 from cli.logs import initialize_env
 
 # Pages
@@ -314,27 +317,23 @@ class MainWindow(QMainWindow):
         self._set_active_tab(0)
         
     def show_download(self):
-        self.download_page.show_menu()
+        self.download_page.go_to_menu()
         self._set_active_tab(1)
         
     def show_pdf(self):
-        self.pdf_page.reset()
         self._set_active_tab(2)
         
     def show_video(self):
-        self.video_page.reset()
+        self.video_page.go_to_menu()
         self._set_active_tab(3)
         
     def show_image(self):
-        self.image_page.reset()
         self._set_active_tab(4)
         
     def show_audio(self):
-        self.audio_page.reset()
         self._set_active_tab(5)
         
     def show_rename(self):
-        self.rename_page.reset()
         self._set_active_tab(6)
     
     def show_error(self, message):
