@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, 
-                             QLineEdit, QTextEdit, QFileDialog, QComboBox, QFrame, QScrollArea, QSizePolicy)
+                             QLineEdit, QTextEdit, QFileDialog, QComboBox, QFrame, QScrollArea, QSizePolicy, QStackedWidget)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QCursor
 from cli.pdf import PDF
@@ -127,20 +127,53 @@ class PDFPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.current_view = "menu"
         self.init_ui()
         
     def init_ui(self):
         self.setStyleSheet(STYLESHEET)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.show_menu()
         
-    def show_menu(self):
-        self.clear_layout()
-        self.current_view = "menu"
+        self.stack = QStackedWidget()
+        self.main_layout.addWidget(self.stack)
+
+        # Menu
+        self.menu_widget = self._create_menu()
+        self.stack.addWidget(self.menu_widget) # 0
+
+        # Merge Page
+        self.merge_widget, self.merge_paths, self.merge_save, self.merge_result = self._create_merge_page()
+        self.stack.addWidget(self.merge_widget) # 1
+
+        # Split Page
+        self.split_widget, self.split_path, self.split_start, self.split_end, self.split_folder, self.split_result = self._create_split_page()
+        self.stack.addWidget(self.split_widget) # 2
+
+        # Extract Page
+        self.extract_widget, self.extract_path, self.extract_result = self._create_extract_page()
+        self.stack.addWidget(self.extract_widget) # 3
+
+        # Delete Page
+        self.delete_widget, self.delete_path, self.delete_pages, self.delete_result = self._create_delete_page()
+        self.stack.addWidget(self.delete_widget) # 4
         
-        # Scroll Area for Menu
+    def go_to_menu(self):
+        self.stack.setCurrentIndex(0)
+
+    def show_merge(self):
+        self.stack.setCurrentIndex(1)
+
+    def show_split(self):
+        self.stack.setCurrentIndex(2)
+
+    def show_extract_images(self):
+        self.stack.setCurrentIndex(3)
+
+    def show_delete_pages(self):
+        self.stack.setCurrentIndex(4)
+
+    def _create_menu(self):
+        widget = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -150,7 +183,6 @@ class PDFPage(QWidget):
         content_layout.setContentsMargins(40, 40, 40, 40)
         content_layout.setSpacing(30)
         
-        # Header
         header = QVBoxLayout()
         title = QLabel("PDF Tools")
         title.setProperty("class", "title")
@@ -162,7 +194,6 @@ class PDFPage(QWidget):
         header.addWidget(subtitle)
         content_layout.addLayout(header)
         
-        # Grid of Tools
         grid = QGridLayout()
         grid.setSpacing(20)
         
@@ -184,13 +215,15 @@ class PDFPage(QWidget):
         
         content_layout.addLayout(grid)
         content_layout.addStretch()
-        
         scroll.setWidget(content_widget)
-        self.main_layout.addWidget(scroll)
         
-    def _setup_page(self, title_text):
-        self.clear_layout()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(scroll)
+        return widget
         
+    def _create_base_subpage(self, title_text):
+        widget = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -200,13 +233,12 @@ class PDFPage(QWidget):
         layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(20)
         
-        # Header with Back Button
         header = QHBoxLayout()
         back_btn = QPushButton("← Back")
         back_btn.setFixedSize(100, 40)
         back_btn.setProperty("class", "back")
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(self.show_menu)
+        back_btn.clicked.connect(self.go_to_menu)
         
         title = QLabel(title_text)
         title.setProperty("class", "title")
@@ -215,55 +247,51 @@ class PDFPage(QWidget):
         header.addStretch()
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(QWidget()) # Spacer for centering
+        header.addWidget(QWidget()) 
         layout.addLayout(header)
         
-        # Card Container for Inputs
         card = QFrame()
         card.setProperty("class", "card")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(30, 30, 30, 30)
         card_layout.setSpacing(20)
-        
         layout.addWidget(card)
         
-        # Result Console
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setPlaceholderText("Process output will appear here...")
-        self.result_text.setMaximumHeight(150)
-        layout.addWidget(self.result_text)
+        result_text = QTextEdit()
+        result_text.setReadOnly(True)
+        result_text.setPlaceholderText("Process output will appear here...")
+        result_text.setMaximumHeight(150)
+        layout.addWidget(result_text)
         
         layout.addStretch()
         scroll.setWidget(content)
-        self.main_layout.addWidget(scroll)
         
-        return card_layout
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0,0,0,0)
+        outer.addWidget(scroll)
+        
+        return widget, card_layout, result_text
 
-    def show_merge(self):
-        layout = self._setup_page("Merge PDF Files")
+    def _create_merge_page(self):
+        widget, layout, result_text = self._create_base_subpage("Merge PDF Files")
         
         layout.addWidget(QLabel("PDF Files:"))
-        
         file_row = QHBoxLayout()
-        self.paths_input = QLineEdit()
-        self.paths_input.setPlaceholderText("Select multiple PDF files...")
+        paths_input = QLineEdit()
+        paths_input.setPlaceholderText("Select multiple PDF files...")
         browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self.browse_merge_files)
-        
-        file_row.addWidget(self.paths_input)
+        browse_btn.clicked.connect(lambda: self.browse_merge_files(paths_input))
+        file_row.addWidget(paths_input)
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
         
         layout.addWidget(QLabel("Save As:"))
-        
         save_row = QHBoxLayout()
-        self.save_input = QLineEdit()
-        self.save_input.setPlaceholderText("Output filename (e.g., merged.pdf)")
+        save_input = QLineEdit()
+        save_input.setPlaceholderText("Output filename (e.g., merged.pdf)")
         save_btn = QPushButton("Browse")
-        save_btn.clicked.connect(self.browse_save_location)
-        
-        save_row.addWidget(self.save_input)
+        save_btn.clicked.connect(lambda: self.browse_save_location(save_input))
+        save_row.addWidget(save_input)
         save_row.addWidget(save_btn)
         layout.addLayout(save_row)
         
@@ -271,33 +299,33 @@ class PDFPage(QWidget):
         process_btn.setProperty("class", "success")
         process_btn.clicked.connect(self.process_merge)
         layout.addWidget(process_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        return widget, paths_input, save_input, result_text
 
-    def show_split(self):
-        layout = self._setup_page("Split PDF File")
+    def _create_split_page(self):
+        widget, layout, result_text = self._create_base_subpage("Split PDF File")
         
         layout.addWidget(QLabel("PDF File:"))
-        
         file_row = QHBoxLayout()
-        self.pdf_path_input = QLineEdit()
+        pdf_path_input = QLineEdit()
         browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(lambda: self.browse_file(self.pdf_path_input, "PDF"))
-        file_row.addWidget(self.pdf_path_input)
+        browse_btn.clicked.connect(lambda: self.browse_file(pdf_path_input, "PDF"))
+        file_row.addWidget(pdf_path_input)
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
         
         range_row = QHBoxLayout()
-        
         start_layout = QVBoxLayout()
         start_layout.addWidget(QLabel("Start Page:"))
-        self.start_page_input = QLineEdit()
-        self.start_page_input.setPlaceholderText("1")
-        start_layout.addWidget(self.start_page_input)
+        start_page_input = QLineEdit()
+        start_page_input.setPlaceholderText("1")
+        start_layout.addWidget(start_page_input)
         
         end_layout = QVBoxLayout()
         end_layout.addWidget(QLabel("End Page:"))
-        self.end_page_input = QLineEdit()
-        self.end_page_input.setPlaceholderText("5")
-        end_layout.addWidget(self.end_page_input)
+        end_page_input = QLineEdit()
+        end_page_input.setPlaceholderText("5")
+        end_layout.addWidget(end_page_input)
         
         range_row.addLayout(start_layout)
         range_row.addLayout(end_layout)
@@ -305,10 +333,10 @@ class PDFPage(QWidget):
         
         layout.addWidget(QLabel("Output Folder:"))
         folder_row = QHBoxLayout()
-        self.save_folder_input = QLineEdit()
+        save_folder_input = QLineEdit()
         browse_folder_btn = QPushButton("Browse")
-        browse_folder_btn.clicked.connect(lambda: self.browse_folder(self.save_folder_input))
-        folder_row.addWidget(self.save_folder_input)
+        browse_folder_btn.clicked.connect(lambda: self.browse_folder(save_folder_input))
+        folder_row.addWidget(save_folder_input)
         folder_row.addWidget(browse_folder_btn)
         layout.addLayout(folder_row)
         
@@ -316,16 +344,18 @@ class PDFPage(QWidget):
         process_btn.setProperty("class", "success")
         process_btn.clicked.connect(self.process_split)
         layout.addWidget(process_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        return widget, pdf_path_input, start_page_input, end_page_input, save_folder_input, result_text
 
-    def show_extract_images(self):
-        layout = self._setup_page("Extract Images")
+    def _create_extract_page(self):
+        widget, layout, result_text = self._create_base_subpage("Extract Images")
         
         layout.addWidget(QLabel("PDF File:"))
         file_row = QHBoxLayout()
-        self.pdf_path_input = QLineEdit()
+        pdf_path_input = QLineEdit()
         browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(lambda: self.browse_file(self.pdf_path_input, "PDF"))
-        file_row.addWidget(self.pdf_path_input)
+        browse_btn.clicked.connect(lambda: self.browse_file(pdf_path_input, "PDF"))
+        file_row.addWidget(pdf_path_input)
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
         
@@ -333,39 +363,43 @@ class PDFPage(QWidget):
         process_btn.setProperty("class", "success")
         process_btn.clicked.connect(self.process_extract)
         layout.addWidget(process_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        return widget, pdf_path_input, result_text
 
-    def show_delete_pages(self):
-        layout = self._setup_page("Delete Pages")
+    def _create_delete_page(self):
+        widget, layout, result_text = self._create_base_subpage("Delete Pages")
         
         layout.addWidget(QLabel("PDF File:"))
         file_row = QHBoxLayout()
-        self.pdf_path_input = QLineEdit()
+        pdf_path_input = QLineEdit()
         browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(lambda: self.browse_file(self.pdf_path_input, "PDF"))
-        file_row.addWidget(self.pdf_path_input)
+        browse_btn.clicked.connect(lambda: self.browse_file(pdf_path_input, "PDF"))
+        file_row.addWidget(pdf_path_input)
         file_row.addWidget(browse_btn)
         layout.addLayout(file_row)
         
         layout.addWidget(QLabel("Pages to delete:"))
-        self.pages_input = QLineEdit()
-        self.pages_input.setPlaceholderText("e.g., 2 or 1-8 or 1,8,5,7")
-        layout.addWidget(self.pages_input)
+        pages_input = QLineEdit()
+        pages_input.setPlaceholderText("e.g., 2 or 1-8 or 1,8,5,7")
+        layout.addWidget(pages_input)
         
         process_btn = QPushButton("Delete Pages")
         process_btn.setProperty("class", "success")
         process_btn.clicked.connect(self.process_delete)
         layout.addWidget(process_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        return widget, pdf_path_input, pages_input, result_text
 
     # --- Helper Functions ---
-    def browse_merge_files(self):
+    def browse_merge_files(self, input_widget):
         files, _ = QFileDialog.getOpenFileNames(self, "Select PDF Files", "", "PDF Files (*.pdf)")
         if files:
-            self.paths_input.setText(','.join(files))
+            input_widget.setText(','.join(files))
             
-    def browse_save_location(self):
+    def browse_save_location(self, input_widget):
         file, _ = QFileDialog.getSaveFileName(self, "Save Location", "", "PDF Files (*.pdf)")
         if file:
-            self.save_input.setText(file)
+            input_widget.setText(file)
             
     def browse_file(self, input_widget, file_type="PDF"):
         file, _ = QFileDialog.getOpenFileName(self, f"Select {file_type} File", "", f"{file_type} Files (*.{file_type.lower()})")
@@ -379,86 +413,78 @@ class PDFPage(QWidget):
 
     # --- Process Logic ---
     def process_merge(self):
-        paths = self.paths_input.text().strip()
-        save = self.save_input.text().strip()
+        paths = self.merge_paths.text().strip()
+        save = self.merge_save.text().strip()
         
         if not paths or not save:
             self.main_window.show_error("Please select files and output location")
             return
             
         paths_list = [p.strip() for p in paths.split(',')]
-        self.result_text.append(f"⏳ Merging {len(paths_list)} files...")
+        self.merge_result.append(f"⏳ Merging {len(paths_list)} files...")
         
         try:
             result = PDF(" ").merge_pdf(paths_list, save)
             write_log(result, 'PDF')
             if result.get('State'):
-                self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
+                self.merge_result.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
             else:
-                self.result_text.append(f"❌ Error: {result.get('Error')}")
+                self.merge_result.append(f"❌ Error: {result.get('Error')}")
         except Exception as e:
-            self.result_text.append(f"❌ Critical Error: {str(e)}")
+            self.merge_result.append(f"❌ Critical Error: {str(e)}")
 
     def process_split(self):
-        pdf_path = self.pdf_path_input.text().strip()
-        start = self.start_page_input.text().strip()
-        end = self.end_page_input.text().strip()
-        save_folder = self.save_folder_input.text().strip()
+        pdf_path = self.split_path.text().strip()
+        start = self.split_start.text().strip()
+        end = self.split_end.text().strip()
+        save_folder = self.split_folder.text().strip()
         
         if not all([pdf_path, start, end, save_folder]):
             self.main_window.show_error("Please fill in all fields")
             return
         
-        self.result_text.append("⏳ Splitting PDF...")
+        self.split_result.append("⏳ Splitting PDF...")
         pdf = PDF(pdf_path)
         result = pdf.split_pdf(start, end, save_folder)
         write_log(result, 'PDF')
         
         if result.get('State'):
-            self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
+            self.split_result.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
         else:
-            self.result_text.append(f"❌ Error: {result.get('Error')}")
+            self.split_result.append(f"❌ Error: {result.get('Error')}")
 
     def process_extract(self):
-        pdf_path = self.pdf_path_input.text().strip()
+        pdf_path = self.extract_path.text().strip()
         if not pdf_path:
             self.main_window.show_error("Please select a PDF file")
             return
         
-        self.result_text.append("⏳ Extracting images (this may take a moment)...")
+        self.extract_result.append("⏳ Extracting images (this may take a moment)...")
         pdf = PDF(pdf_path)
         result = pdf.pdf_extract_images()
         write_log(result, 'PDF')
         
         if result.get('State'):
-            self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
+            self.extract_result.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
         else:
-            self.result_text.append(f"❌ Error: {result.get('Error')}")
+            self.extract_result.append(f"❌ Error: {result.get('Error')}")
 
     def process_delete(self):
-        pdf_path = self.pdf_path_input.text().strip()
-        pages = self.pages_input.text().strip()
+        pdf_path = self.delete_path.text().strip()
+        pages = self.delete_pages.text().strip()
         if not all([pdf_path, pages]):
             self.main_window.show_error("Please fill in all fields")
             return
         
-        self.result_text.append("⏳ Deleting pages...")
+        self.delete_result.append("⏳ Deleting pages...")
         pdf = PDF(pdf_path)
         result = pdf.pdf_pages_delete(pages)
         write_log(result, 'PDF')
         
         if result.get('State'):
-            self.result_text.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
+            self.delete_result.append(f"✅ {result.get('Message')}\nSaved to: {result.get('Save Location')}")
         else:
-            self.result_text.append(f"❌ Error: {result.get('Error')}")
-
-    def clear_layout(self):
-        if self.main_layout.count():
-            # Loop backwards to safely remove widgets
-            for i in reversed(range(self.main_layout.count())):
-                item = self.main_layout.takeAt(i)
-                if item.widget():
-                    item.widget().deleteLater()
+            self.delete_result.append(f"❌ Error: {result.get('Error')}")
 
     def reset(self):
-        self.show_menu()
+        pass
