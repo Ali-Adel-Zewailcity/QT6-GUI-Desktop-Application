@@ -96,6 +96,8 @@ class HistoryPage(QWidget):
             if message and message.strip():
                 display_msg = message
                 bg = QColor(166, 227, 161, 80)  # light green with transparency
+                if "error" in message.strip().lower():
+                    bg = QColor(243, 139, 168, 80)
             else:
                 display_msg = error or ''
                 bg = QColor(243, 139, 168, 80)  # light red/pink transparent
@@ -261,3 +263,4 @@ class HistoryPage(QWidget):
         copy_action.triggered.connect(_copy)
         # Show menu at global position
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
